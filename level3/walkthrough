@@ -50,6 +50,10 @@ So now to make our exploit we need to:
      Place the address 0x804988c at the start of our buffer
      Print exactly 60 more characters (so total=64)
      Use %4$n to write the count to the address
+
+We found the that we need to use the 4th argument with this:
+	
+	python -c 'print "AAAA" + "BBBB" + " %x %x %x %x %x %x"' | ./level3
      
 
 Here's the exploit: 

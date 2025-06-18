@@ -1,0 +1,88 @@
+First, let's examine the binary to understand its protections and behavior: 
+
+Let's investigate the program's behavior: 
+
+	level4@RainFall:~$ ./level4
+	test
+	test
+
+The program reads our input and echoes it back. Now let's disassemble the code: 
+
+See the functions in the ressources folder
+ 
+
+Let's check what's at the address used by system: 
+
+	(gdb) x/s 0x8048590
+	0x8048590: "/bin/cat /home/user/level5/.pass"
+ 
+From our analysis, we understand that: 
+
+     The n() function reads input with fgets()
+     It passes this input to p()
+     The p() function passes the input directly to printf() - this is a format string vulnerability
+     After p() returns, n() checks if a global variable at 0x8049810 equals 0x1025544 (16930116 in decimal)
+     If the condition is met, it executes system("/bin/cat /home/user/level5/.pass")
+     
+
+Let's check the initial value of the global variable: 
+
+	(gdb) x/wx 0x8049810
+	0x8049810: 0x00000000
+
+The vulnerability and exploitation path is clear: 
+
+     Use the format string vulnerability to modify the global variable at 0x8049810
+     Set it to the value 0x1025544 (16930116)
+     This will trigger the execution of system("/bin/cat /home/user/level5/.pass")
+     
+To exploit the format string vulnerability, we need to determine where our input appears in the stack: 
+
+	level4@RainFall:~$ python -c 'print "AAAA" + "BBBB" + " %x %x %x %x %x %x %x %x %x %x %x %x %x"' | ./level4
+	AAAABBBB b7ff26b0 bffff684 b7fd0ff4 0 0 bffff648 804848d bffff440 200 b7fd1ac0 b7ff37d0 41414141 42424242
+
+We can observe that: 
+
+     "AAAA" (0x41414141) appears at the 12th position
+     "BBBB" (0x42424242) appears at the 13th position
+     
+
+This means we can use %12$hn and %13$hn to write to memory addresses placed at the beginning of our buffer. 
+
+We need to modify the global variable at 0x8049810 to equal 0x01025544 (16930116). Since this is a large value, we'll write it in two parts: 
+
+     Write 0x5544 (21828) to the lower 2 bytes at 0x8049810
+     Write 0x0102 (258) to the upper 2 bytes at 0x8049810 + 2
+     
+
+See the exploit in the ressources folder
+ 
+Save the script as /tmp/exploit.py and make it executable: 
+
+	chmod +x /tmp/exploit.py
+
+Then execute it and pipe the output to the vulnerable program: 
+
+	/tmp/level4_exploit.py | ./level4
+ 
+	...padding...
+	0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a
+ 
+Here's why our exploit works: 
+
+     We place two 4-byte addresses at the beginning of our input: 0x8049810 and 0x8049810 + 2
+     We use format specifiers to control how many characters are printed:
+         First, we print 21828 characters total (8 from our addresses + 21820 from padding)
+         Then we use %12$hn to write the value 21828 to the memory at position 12 (0x8049810)
+         Next, we print another 43966 characters (to reach the desired 258 after 16-bit overflow)
+         Finally, we use %13$hn to write the value 258 to the memory at position 13 (0x8049810 + 2)
+         
+     This sets the global variable to 0x01025544, triggering the condition
+     The program executes system("/bin/cat /home/user/level5/.pass")
+     
+
+The %n$hn syntax is a key part of the exploit: 
+
+     %n$ means "use the nth argument" (direct parameter access)
+     hn means "write a 16-bit value" (half-word)
+     
