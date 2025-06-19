@@ -1,0 +1,94 @@
+First, let's examine the binary to understand its protections and behavior: 
+
+Let's investigate what the program does: 
+
+	level5@RainFall:~$ ./level5
+	test
+	test
+
+The program reads our input and echoes it back. Now let's disassemble the code: 
+
+See the assembly code in the ressources folder
+ 
+
+Let's check what string is passed to system(): 
+
+	(gdb) x/s 0x80485f0
+	0x80485f0: "/bin/sh"
+ 
+ 
+From our analysis, we understand the program's behavior: 
+
+     The main() function calls n()
+     The n() function:
+         Reads user input with fgets(buffer, 512, stdin)
+         Passes this input directly to printf(buffer) - a format string vulnerability
+         Calls exit(1) to terminate the program
+         
+     There's an unused function o() that calls system("/bin/sh")
+     
+
+The key challenge is that n() calls exit() after printf(), not return. This means we cannot use a traditional buffer overflow to redirect the flow of execution by overwriting a return address. 
+
+Since the program uses exit() to terminate, we need to find a way to hijack the execution flow when exit() is called. This is possible through a technique called GOT (Global Offset Table) overwrite. 
+
+When a program calls a shared library function like exit(), it first looks up the function's address in the GOT, and then jumps to that address. If we can overwrite the GOT entry for exit() with the address of o(), then when n() calls exit(), it will execute o() instead. 
+
+Let's find the GOT entry for exit(): 
+
+	level5@RainFall:~$ objdump -R level5 | grep exit
+	08049828 R_386_JUMP_SLOT   _exit
+	08049838 R_386_JUMP_SLOT   exit
+
+We need to overwrite the entry at 0x08049838 with the address of o() which is 0x080484a4. 
+
+To exploit the format string vulnerability, we need to determine where our input appears in the stack: 
+
+level5@RainFall:~$ python -c 'print "AAAA" + "BBBB" + " %x %x %x %x %x %x"' | ./level5
+AAAABBBB 200 b7fd1ac0 b7ff37d0 41414141 42424242 20782520
+ 
+ 
+
+We can observe that: 
+
+     "AAAA" (0x41414141) appears at the 4th position
+     "BBBB" (0x42424242) appears at the 5th position
+     
+
+This means we can use %4$hn and %5$hn to write to memory addresses placed at the beginning of our buffer. 
+
+We need to overwrite the GOT entry for exit() with the address of o(). Since the address is 4 bytes, we'll write it in two parts: 
+
+     Write the lower 2 bytes (0x84a4) to 0x08049838
+     Write the upper 2 bytes (0x0804) to 0x0804983a
+     
+
+See the exploit in the ressources folder
+ 
+ 
+Save the script as /tmp/exploit.py and make it executable: 
+
+	chmod +x /tmp/exploit.py
+ 
+Now run the exploit while keeping stdin open so we can interact with the shell: 
+
+	(python /tmp/exploit.py; cat) | ./level5
+
+After a lot of padding output (from the %NNNd format specifiers), we get a shell with level6 privileges: 
+
+$ whoami
+level6
+$ cat /home/user/level6/.pass
+d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31
+ 
+Here's why our exploit works: 
+
+     We use the format string vulnerability in printf(buffer) to overwrite the GOT entry for exit()
+     We place the target addresses (0x08049838 and 0x0804983a) at the beginning of our input
+     We use %4$hn and %5$hn to write specific values to these addresses:
+         First, we write 0x84a4 to 0x08049838 (lower 2 bytes of o())
+         Then, we write 0x0804 to 0x0804983a (upper 2 bytes of o())
+         
+     When n() calls exit(), the program looks up its address in the GOT
+     Since we've overwritten this entry with the address of o(), the program executes o() instead
+     The o() function calls system("/bin/sh"), giving us a shell
