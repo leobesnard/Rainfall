@@ -1,0 +1,85 @@
+First, let's examine the binary to understand its protections and behavior: 
+
+Let's see how the program behaves when run with different inputs: 
+
+	level6@RainFall:~$ ./level6
+	Segmentation fault (core dumped)
+
+	level6@RainFall:~$ ./level6 test
+	Nope
+
+The program seems to take an argument and print "Nope". Now let's disassemble the code using GDB: 
+
+See the assembly code in the ressources folder
+
+Let's check what string is passed to system() in the n() function: 
+
+	(gdb) x/s 0x80485b0
+	0x80485b0: "/bin/cat /home/user/level7/.pass"
+ 
+ 
+From our analysis, we understand that: 
+
+    The program allocates two buffers on the heap: 
+         buffer1: 64 bytes for storing user input from argv[1]
+         buffer2: 4 bytes for storing a function pointer
+
+It initializes the function pointer in buffer2 to point to function m() 
+It copies argv[1] into buffer1 using strcpy() without any bounds checking 
+Finally, it calls the function pointed to by the function pointer in buffer2 
+     
+
+Normally, this would call m() and print "Nope", but the vulnerability in strcpy() allows us to overflow buffer1 and potentially overwrite the function pointer in buffer2. 
+
+The key vulnerability is the use of strcpy() without bounds checking: 
+
+strcpy(buffer1, argv[1]);  // Vulnerable to buffer overflow
+ 
+Since buffer1 is 64 bytes and strcpy() will copy until it hits a null byte, we can provide an input longer than 64 bytes to overflow buffer1 and overwrite adjacent memory on the heap. 
+
+Given that: 
+
+     buffer1 is allocated first with 64 bytes
+     buffer2 is allocated second with 4 bytes
+     buffer2 contains a function pointer that gets called
+     
+
+Our exploitation strategy is clear: we need to overwrite the function pointer in buffer2 with the address of n(), which will print the level7 password. 
+
+The address of function n() is 0x08048454. However, we need to determine how many bytes to write before we reach buffer2 from buffer1. 
+
+The heap layout isn't as straightforward as just 64 bytes for buffer1 followed immediately by buffer2. There's likely some metadata or padding between the allocations. 
+
+Let's try different padding lengths to find the right offset: 
+
+	level6@RainFall:~$ ./level6 $(python -c 'print "A"*72 + "\x54\x84\x04\x08"')
+
+This command: 
+
+     Creates a string with 72 'A' characters
+     Appends the address of n() in little-endian format (\x54\x84\x04\x08)
+     Passes this as an argument to ./level6
+     
+
+When executed, this successfully overwrites the function pointer and executes n(), which runs: 
+
+	system("/bin/cat /home/user/level7/.pass")
+
+Our exploit works because: 
+
+    We overwrite the 64-byte buffer with 72 'A' characters, which fills: 
+         The 64-byte buffer itself
+         8 bytes of metadata/padding between the allocations
+         
+
+After these 72 bytes, we place the address of n() (0x08048454) 
+When the program tries to call the function pointer, it executes n() instead of m() 
+The n() function calls system("/bin/cat /home/user/level7/.pass"), printing the password 
+     
+
+The vulnerability could have been prevented by: 
+
+     Using a bounds-checking function like strncpy() instead of strcpy()
+     Validating the length of user input before copying it
+     Implementing heap protections to detect buffer overflows
+     
